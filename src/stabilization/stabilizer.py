@@ -41,7 +41,7 @@ class Stabilizer:
         self.frame_dimensions = None
         self.debug_data = []  # Store debug information
         
-    def compute_offsets(self, pose_data_list, target_position=None):
+    def compute_offsets(self, pose_data_list, target_position=None, normalized=True):
         """
         Compute translation offsets from smart centers to target position.
         Uses best available center point (shoulders, hips, or keypoint center)
@@ -49,6 +49,7 @@ class Stabilizer:
         Args:
             pose_data_list (list): List of pose data from pose detection
             target_position (tuple): Target (x, y) position (frame center by default)
+            normalized (bool): Indicates if pose data is in normalized coordinates
             
         Returns:
             List[Tuple]: List of (dx, dy) offsets
@@ -56,45 +57,41 @@ class Stabilizer:
         # Use provided target or config default or frame center
         if target_position is None:
             target_position = self.config.target_position
-        
-        # If still no target, will be set when we know frame dimensions
-        target_x, target_y = target_position if target_position else (0.5, 0.5)
-        
+
         offsets = []
-        
+
         for pose_data in pose_data_list:
-            # Use smart center instead of hip center
             center_x = pose_data['smart_center']['x']
             center_y = pose_data['smart_center']['y']
             confidence = pose_data['smart_confidence']
             axis_type = pose_data.get('axis_type', 'unknown')
-            
-            if confidence > 0.3:  # Valid center point data
-                # Convert normalized coordinates to pixel coordinates if needed
-                if center_x <= 1.0 and center_y <= 1.0:  # Normalized coordinates
+
+            if confidence > 0.3:
+                if normalized:
                     if self.frame_dimensions:
                         frame_width, frame_height = self.frame_dimensions
                         center_x *= frame_width
                         center_y *= frame_height
-                        target_x_px = target_x * frame_width if target_x <= 1.0 else target_x
-                        target_y_px = target_y * frame_height if target_y <= 1.0 else target_y
+                        target_x = target_position[0] * frame_width if target_position[0] <= 1.0 else target_position[0]
+                        target_y = target_position[1] * frame_height if target_position[1] <= 1.0 else target_position[1]
                     else:
-                        # Assume target is also normalized
-                        target_x_px, target_y_px = target_x, target_y
+                        # Can't convert without frame dimensions
+                        offsets.append(self.last_valid_offset)
+                        continue
                 else:
-                    # Already in pixel coordinates
-                    target_x_px, target_y_px = target_x, target_y
-                
+                    target_x = target_position[0]
+                    target_y = target_position[1]
+
                 # Compute offset: center - target (to move frame so person appears at target)
-                dx = center_x - target_x_px
-                dy = center_y - target_y_px
+                dx = center_x - target_x
+                dy = center_y - target_y
                 
                 # Debug logging
                 debug_info = {
                     "frame": len(offsets),
                     "center_normalized": {"x": pose_data['smart_center']['x'], "y": pose_data['smart_center']['y']},
                     "center_pixel": {"x": float(center_x), "y": float(center_y)},
-                    "target_pixel": {"x": float(target_x_px), "y": float(target_y_px)},
+                    "target_pixel": {"x": float(target_x), "y": float(target_y)},
                     "offset_raw": {"dx": float(dx), "dy": float(dy)},
                     "confidence": float(confidence),
                     "axis_type": axis_type,
@@ -105,9 +102,8 @@ class Stabilizer:
                 self.last_valid_offset = (dx, dy)
                 offsets.append((dx, dy))
             else:
-                # Low confidence - carry forward last valid offset (master doc requirement)
                 offsets.append(self.last_valid_offset)
-        
+
         return offsets
         
     def smooth_offsets(self, offsets):
@@ -132,12 +128,14 @@ class Stabilizer:
             # Moving average smoothing (master doc default)
             dx_smooth = self._moving_average(dx_values, self.config.smoothing_window)
             dy_smooth = self._moving_average(dy_values, self.config.smoothing_window)
+            print(f"Moving average smoothing applied with window size {self.config.smoothing_window}.")
             
         elif self.config.smoothing_method == "gaussian":
             # Gaussian smoothing (master doc alternative)
             sigma = self.config.smoothing_window / 3.0  # Convert window to sigma
             dx_smooth = ndimage.gaussian_filter1d(dx_values, sigma)
             dy_smooth = ndimage.gaussian_filter1d(dy_values, sigma)
+            print(f"Gaussian smoothing applied with sigma {sigma}.")
         
         # Recombine into tuples
         smoothed_offsets = [(dx_smooth[i], dy_smooth[i]) for i in range(len(offsets))]
