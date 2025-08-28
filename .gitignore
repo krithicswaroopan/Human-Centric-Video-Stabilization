@@ -1,0 +1,27 @@
+# Ignore common debug folders
+debug_output1/
+debug_output2/
+debug_output3/
+output/
+output1/
+output2/
+output3/
+bin/
+*.user
+*.suo
+*.ncb
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.vcproj.*.user
+*.log
+
+# Ignore files/folders even if previously tracked and removed
+# (after running 'git rm --cached <file>')
+# Add patterns for files/folders you want to keep ignored
+
+# Example:
+# old_data/
+# secret_config.json
+

@@ -39,14 +39,15 @@ class Stabilizer:
         self.config = config or StabilizationConfig()
         self.last_valid_offset = (0, 0)
         self.frame_dimensions = None
+        self.debug_data = []  # Store debug information
         
-    def compute_offsets(self, hip_centers, target_position=None):
+    def compute_offsets(self, pose_data_list, target_position=None):
         """
-        Compute translation offsets from hip centers to target position.
-        Master doc: Δx = x_target - x_hip, Δy = y_target - y_hip
+        Compute translation offsets from smart centers to target position.
+        Uses best available center point (shoulders, hips, or keypoint center)
         
         Args:
-            hip_centers (list): List of hip center coordinates from pose detection
+            pose_data_list (list): List of pose data from pose detection
             target_position (tuple): Target (x, y) position (frame center by default)
             
         Returns:
@@ -61,18 +62,20 @@ class Stabilizer:
         
         offsets = []
         
-        for hip_data in hip_centers:
-            hip_x = hip_data['x']
-            hip_y = hip_data['y']
-            confidence = hip_data['confidence']
+        for pose_data in pose_data_list:
+            # Use smart center instead of hip center
+            center_x = pose_data['smart_center']['x']
+            center_y = pose_data['smart_center']['y']
+            confidence = pose_data['smart_confidence']
+            axis_type = pose_data.get('axis_type', 'unknown')
             
-            if confidence > 0.3:  # Valid hip center data
+            if confidence > 0.3:  # Valid center point data
                 # Convert normalized coordinates to pixel coordinates if needed
-                if hip_x <= 1.0 and hip_y <= 1.0:  # Normalized coordinates
+                if center_x <= 1.0 and center_y <= 1.0:  # Normalized coordinates
                     if self.frame_dimensions:
                         frame_width, frame_height = self.frame_dimensions
-                        hip_x *= frame_width
-                        hip_y *= frame_height
+                        center_x *= frame_width
+                        center_y *= frame_height
                         target_x_px = target_x * frame_width if target_x <= 1.0 else target_x
                         target_y_px = target_y * frame_height if target_y <= 1.0 else target_y
                     else:
@@ -82,9 +85,22 @@ class Stabilizer:
                     # Already in pixel coordinates
                     target_x_px, target_y_px = target_x, target_y
                 
-                # Compute offset: target - hip (as per master doc)
-                dx = target_x_px - hip_x
-                dy = target_y_px - hip_y
+                # Compute offset: center - target (to move frame so person appears at target)
+                dx = center_x - target_x_px
+                dy = center_y - target_y_px
+                
+                # Debug logging
+                debug_info = {
+                    "frame": len(offsets),
+                    "center_normalized": {"x": pose_data['smart_center']['x'], "y": pose_data['smart_center']['y']},
+                    "center_pixel": {"x": float(center_x), "y": float(center_y)},
+                    "target_pixel": {"x": float(target_x_px), "y": float(target_y_px)},
+                    "offset_raw": {"dx": float(dx), "dy": float(dy)},
+                    "confidence": float(confidence),
+                    "axis_type": axis_type,
+                    "frame_dims": self.frame_dimensions
+                }
+                self.debug_data.append(debug_info)
                 
                 self.last_valid_offset = (dx, dy)
                 offsets.append((dx, dy))
@@ -207,3 +223,18 @@ class Stabilizer:
             stabilized_frames.append(stabilized_frame)
         
         return stabilized_frames
+    
+    def get_debug_data(self):
+        """Return collected debug data."""
+        return self.debug_data.copy()
+    
+    def log_smoothing_debug(self, raw_offsets, smoothed_offsets):
+        """Log smoothing operation details."""
+        smoothing_debug = {
+            "smoothing_method": self.config.smoothing_method,
+            "smoothing_window": self.config.smoothing_window,
+            "raw_offsets_sample": raw_offsets[:5] if len(raw_offsets) > 5 else raw_offsets,
+            "smoothed_offsets_sample": smoothed_offsets[:5] if len(smoothed_offsets) > 5 else smoothed_offsets,
+            "total_frames": len(raw_offsets)
+        }
+        return smoothing_debug

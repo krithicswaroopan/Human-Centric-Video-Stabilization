@@ -76,16 +76,23 @@ class PoseDetector:
                         'visibility': landmark.visibility
                     })
                 
-                # Calculate hip center
+                # Calculate smart center (best available axis)
+                center_x, center_y, center_confidence, axis_type = self.calculate_smart_center(results.pose_landmarks)
+                
+                # Also calculate hip center for backward compatibility
                 hip_center_x, hip_center_y, hip_confidence = self.calculate_hip_center(results.pose_landmarks)
                 
                 # Store current pose for error handling
                 pose_data = {
                     'frame': self.frame_count,
                     'timestamp': self.frame_count / 30.0,  # Assuming 30 FPS
-                    'hip_center': {'x': hip_center_x, 'y': hip_center_y},
+                    'smart_center': {'x': center_x, 'y': center_y},
+                    'smart_confidence': center_confidence,
+                    'axis_type': axis_type,
+                    'hip_center': {'x': hip_center_x, 'y': hip_center_y},  # Keep for compatibility
                     'hip_confidence': hip_confidence,
-                    'keypoints': landmarks
+                    'keypoints': landmarks,
+                    'raw_landmarks': results.pose_landmarks  # Store for overlay visualization
                 }
                 self.previous_pose = pose_data.copy()
                 return pose_data
@@ -98,6 +105,9 @@ class PoseDetector:
                     return {
                         'frame': self.frame_count,
                         'timestamp': self.frame_count / 30.0,
+                        'smart_center': {'x': 0.5, 'y': 0.5},
+                        'smart_confidence': 0.0,
+                        'axis_type': 'fallback',
                         'hip_center': {'x': 0, 'y': 0},
                         'hip_confidence': 0.0,
                         'keypoints': []
@@ -111,6 +121,9 @@ class PoseDetector:
                 return {
                     'frame': self.frame_count,
                     'timestamp': self.frame_count / 30.0,
+                    'smart_center': {'x': 0.5, 'y': 0.5},
+                    'smart_confidence': 0.0,
+                    'axis_type': 'fallback',
                     'hip_center': {'x': 0, 'y': 0},
                     'hip_confidence': 0.0,
                     'keypoints': []
@@ -199,6 +212,77 @@ class PoseDetector:
                 hip_confidence = 0.0
         
         return hip_center_x, hip_center_y, hip_confidence
+    
+    def calculate_smart_center(self, pose_landmarks):
+        """
+        Calculate the best available center point from visible keypoints.
+        Priority: Shoulders > Hips > Visible keypoints center
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks
+            
+        Returns:
+            tuple: (x, y, confidence, axis_type)
+        """
+        # MediaPipe landmark indices
+        LEFT_SHOULDER = 11
+        RIGHT_SHOULDER = 12
+        LEFT_HIP = 23
+        RIGHT_HIP = 24
+        
+        # Calculate shoulder center
+        left_shoulder = pose_landmarks.landmark[LEFT_SHOULDER]
+        right_shoulder = pose_landmarks.landmark[RIGHT_SHOULDER]
+        shoulder_confidence = (left_shoulder.visibility + right_shoulder.visibility) / 2
+        
+        # Calculate hip center  
+        left_hip = pose_landmarks.landmark[LEFT_HIP]
+        right_hip = pose_landmarks.landmark[RIGHT_HIP]
+        hip_confidence = (left_hip.visibility + right_hip.visibility) / 2
+        
+        # Choose best available axis based on confidence and coordinate validity
+        axes = []
+        
+        # Shoulder axis
+        if (shoulder_confidence > 0.3 and 
+            0 <= left_shoulder.x <= 1 and 0 <= left_shoulder.y <= 1 and
+            0 <= right_shoulder.x <= 1 and 0 <= right_shoulder.y <= 1):
+            shoulder_x = (left_shoulder.x + right_shoulder.x) / 2
+            shoulder_y = (left_shoulder.y + right_shoulder.y) / 2
+            axes.append((shoulder_x, shoulder_y, shoulder_confidence, "shoulder"))
+        
+        # Hip axis
+        if (hip_confidence > 0.3 and 
+            0 <= left_hip.x <= 1 and 0 <= left_hip.y <= 1 and
+            0 <= right_hip.x <= 1 and 0 <= right_hip.y <= 1):
+            hip_x = (left_hip.x + right_hip.x) / 2
+            hip_y = (left_hip.y + right_hip.y) / 2
+            axes.append((hip_x, hip_y, hip_confidence, "hip"))
+        
+        # If both shoulder and hip available, prefer higher confidence
+        if axes:
+            # Sort by confidence, highest first
+            axes.sort(key=lambda x: x[2], reverse=True)
+            return axes[0]  # Return best axis
+        
+        # Fallback: center of all visible keypoints
+        visible_points = []
+        for idx, landmark in enumerate(pose_landmarks.landmark):
+            if (landmark.visibility > 0.3 and 
+                0 <= landmark.x <= 1 and 0 <= landmark.y <= 1):
+                visible_points.append((landmark.x, landmark.y, landmark.visibility))
+        
+        if visible_points:
+            # Calculate weighted center of visible points
+            total_weight = sum(point[2] for point in visible_points)
+            if total_weight > 0:
+                center_x = sum(point[0] * point[2] for point in visible_points) / total_weight
+                center_y = sum(point[1] * point[2] for point in visible_points) / total_weight
+                avg_confidence = total_weight / len(visible_points)
+                return center_x, center_y, avg_confidence, "keypoints_center"
+        
+        # Last resort: return frame center with zero confidence
+        return 0.5, 0.5, 0.0, "fallback"
         
     def export_to_json(self, pose_data, output_path):
         """
@@ -268,3 +352,189 @@ class PoseDetector:
                     hip_centers[i]['confidence'] = hip_centers[next_valid]['confidence'] * 0.5
         
         return hip_centers
+    
+    def draw_pose_overlay(self, frame, pose_landmarks, hip_center_pixel, frame_num):
+        """
+        Draw pose overlay for debugging and verification.
+        
+        Args:
+            frame: Original frame
+            pose_landmarks: MediaPipe pose landmarks
+            hip_center_pixel: Hip center in pixel coordinates (x, y)
+            frame_num: Frame number for labeling
+            
+        Returns:
+            Frame with pose overlay drawn
+        """
+        if pose_landmarks is None:
+            return frame
+        
+        overlay_frame = frame.copy()
+        height, width = frame.shape[:2]
+        
+        # Draw all pose landmarks
+        for idx, landmark in enumerate(pose_landmarks.landmark):
+            x = int(landmark.x * width)
+            y = int(landmark.y * height)
+            
+            # Different colors for different body parts
+            if idx in [23, 24]:  # Hip landmarks
+                color = (0, 255, 0)  # Green for hips
+                radius = 8
+            elif idx in [11, 12, 13, 14, 15, 16]:  # Arms
+                color = (255, 0, 0)  # Blue for arms
+                radius = 4
+            else:
+                color = (0, 0, 255)  # Red for other landmarks
+                radius = 3
+                
+            cv2.circle(overlay_frame, (x, y), radius, color, -1)
+            
+            # Label hip landmarks
+            if idx in [23, 24]:
+                label = f"L_HIP" if idx == 23 else "R_HIP"
+                cv2.putText(overlay_frame, label, (x + 10, y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+        
+        # Draw hip center with larger circle
+        if hip_center_pixel:
+            hip_x, hip_y = int(hip_center_pixel[0]), int(hip_center_pixel[1])
+            cv2.circle(overlay_frame, (hip_x, hip_y), 12, (255, 255, 0), 3)  # Yellow circle
+            cv2.putText(overlay_frame, "HIP_CENTER", (hip_x + 15, hip_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+        
+        # Add frame info
+        cv2.putText(overlay_frame, f"Frame: {frame_num}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        cv2.putText(overlay_frame, f"Hip: ({hip_center_pixel[0]:.1f}, {hip_center_pixel[1]:.1f})" if hip_center_pixel else "No Hip", 
+                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        return overlay_frame
+    
+    def draw_full_pose_skeleton(self, frame, pose_landmarks, smart_center_pixel, axis_type, frame_num):
+        """
+        Draw comprehensive pose skeleton with larger keypoints for stabilized output.
+        
+        Args:
+            frame: Input frame (person-only segmented frame)
+            pose_landmarks: MediaPipe pose landmarks
+            smart_center_pixel: Smart center in pixel coordinates (x, y)
+            axis_type: Type of axis used ("shoulder", "hip", "keypoints_center", "fallback")
+            frame_num: Frame number for labeling
+            
+        Returns:
+            Frame with full pose skeleton overlay
+        """
+        if pose_landmarks is None:
+            return frame
+        
+        overlay_frame = frame.copy()
+        height, width = frame.shape[:2]
+        
+        # MediaPipe pose connections for skeleton
+        pose_connections = [
+            # Head and torso
+            (0, 1), (0, 4), (1, 2), (2, 3), (3, 7),  # Head
+            (4, 5), (5, 6), (6, 8),  # More head
+            (9, 10),  # Mouth
+            (11, 12),  # Shoulders  
+            (11, 23), (12, 24),  # Torso to hips
+            (23, 24),  # Hip line
+            
+            # Left arm
+            (11, 13), (13, 15), (15, 17), (15, 19), (15, 21), (17, 19),
+            
+            # Right arm  
+            (12, 14), (14, 16), (16, 18), (16, 20), (16, 22), (18, 20),
+            
+            # Left leg
+            (23, 25), (25, 27), (27, 29), (29, 31), (27, 31),
+            
+            # Right leg
+            (24, 26), (26, 28), (28, 30), (30, 32), (28, 32)
+        ]
+        
+        # Draw pose connections (skeleton lines)
+        for connection in pose_connections:
+            start_idx, end_idx = connection
+            start_point = pose_landmarks.landmark[start_idx]
+            end_point = pose_landmarks.landmark[end_idx]
+            
+            # Only draw if both points are visible and valid
+            if (start_point.visibility > 0.3 and end_point.visibility > 0.3 and
+                0 <= start_point.x <= 1 and 0 <= start_point.y <= 1 and
+                0 <= end_point.x <= 1 and 0 <= end_point.y <= 1):
+                
+                start_pixel = (int(start_point.x * width), int(start_point.y * height))
+                end_pixel = (int(end_point.x * width), int(end_point.y * height))
+                
+                # Draw skeleton line
+                cv2.line(overlay_frame, start_pixel, end_pixel, (0, 255, 255), 3)  # Yellow lines
+        
+        # Draw all pose landmarks with larger, color-coded keypoints
+        for idx, landmark in enumerate(pose_landmarks.landmark):
+            if landmark.visibility > 0.3 and 0 <= landmark.x <= 1 and 0 <= landmark.y <= 1:
+                x = int(landmark.x * width)
+                y = int(landmark.y * height)
+                
+                # Color coding for different body parts
+                if idx in [11, 12]:  # Shoulders
+                    color = (0, 255, 0)  # Green
+                    radius = 10
+                elif idx in [23, 24]:  # Hips
+                    color = (255, 0, 0)  # Blue
+                    radius = 10
+                elif idx in [13, 14, 15, 16]:  # Arms
+                    color = (255, 255, 0)  # Cyan
+                    radius = 8
+                elif idx in [25, 26, 27, 28]:  # Legs
+                    color = (0, 0, 255)  # Red
+                    radius = 8
+                elif idx <= 10:  # Head/face
+                    color = (255, 0, 255)  # Magenta
+                    radius = 6
+                else:  # Other points
+                    color = (128, 128, 128)  # Gray
+                    radius = 5
+                
+                # Draw keypoint
+                cv2.circle(overlay_frame, (x, y), radius, color, -1)
+                
+                # Add labels for key landmarks
+                if idx in [11, 12, 23, 24]:
+                    labels = {11: "L_SHOULDER", 12: "R_SHOULDER", 23: "L_HIP", 24: "R_HIP"}
+                    cv2.putText(overlay_frame, labels[idx], (x + 12, y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+        
+        # Draw smart center point with distinctive marking
+        if smart_center_pixel:
+            center_x, center_y = int(smart_center_pixel[0]), int(smart_center_pixel[1])
+            
+            # Draw center point based on axis type
+            center_colors = {
+                "shoulder": (0, 255, 0),      # Green
+                "hip": (255, 0, 0),           # Blue  
+                "keypoints_center": (255, 255, 0),  # Cyan
+                "fallback": (128, 128, 128)   # Gray
+            }
+            center_color = center_colors.get(axis_type, (255, 255, 255))
+            
+            # Draw large center point
+            cv2.circle(overlay_frame, (center_x, center_y), 15, center_color, 4)
+            cv2.circle(overlay_frame, (center_x, center_y), 8, (255, 255, 255), -1)  # White center
+            
+            # Add center point label
+            cv2.putText(overlay_frame, f"CENTER ({axis_type.upper()})", (center_x + 20, center_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, center_color, 2)
+        
+        # Add frame information
+        info_color = (255, 255, 255)  # White text
+        cv2.putText(overlay_frame, f"Frame: {frame_num}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, info_color, 2)
+        cv2.putText(overlay_frame, f"Axis: {axis_type.upper()}", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, info_color, 2)
+        if smart_center_pixel:
+            cv2.putText(overlay_frame, f"Center: ({smart_center_pixel[0]:.0f}, {smart_center_pixel[1]:.0f})", 
+                       (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, info_color, 2)
+        
+        return overlay_frame

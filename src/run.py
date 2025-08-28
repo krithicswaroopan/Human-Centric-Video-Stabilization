@@ -156,21 +156,55 @@ def main():
             frame_height, frame_width = frames[0].shape[:2] 
             stabilizer.config.target_position = (frame_width // 2, frame_height // 2)
         
-        # Compute and smooth offsets
-        offsets = stabilizer.compute_offsets(pose_data['hip_centers'])
+        # Create pose data list for stabilization (use smart centers)
+        pose_data_list = []
+        for i in range(len(frames)):
+            # Process each frame to get smart center data  
+            pose_detector.frame_count = i
+            frame_pose_data = pose_detector.process_frame(frames[i])
+            pose_data_list.append(frame_pose_data)
+        
+        # Compute and smooth offsets using smart centers
+        offsets = stabilizer.compute_offsets(pose_data_list)
         smooth_offsets = stabilizer.smooth_offsets(offsets)
         
-        # Apply transforms to person frames
+        # Apply transforms to person frames  
         stabilized_frames = stabilizer.apply_transforms(person_frames, smooth_offsets)
+        
+        # Add pose skeleton overlay to stabilized frames
+        print("Adding pose skeleton overlay to stabilized frames...")
+        stabilized_frames_with_pose = []
+        
+        for i, (stabilized_frame, frame_pose_data) in enumerate(zip(stabilized_frames, pose_data_list)):
+            if 'raw_landmarks' in frame_pose_data and frame_pose_data['raw_landmarks']:
+                # Convert smart center to pixel coordinates
+                smart_center = frame_pose_data['smart_center']
+                smart_center_pixel = (
+                    smart_center['x'] * frame_width if smart_center['x'] <= 1.0 else smart_center['x'],
+                    smart_center['y'] * frame_height if smart_center['y'] <= 1.0 else smart_center['y']
+                )
+                
+                # Add full pose skeleton to stabilized frame
+                frame_with_pose = pose_detector.draw_full_pose_skeleton(
+                    stabilized_frame,
+                    frame_pose_data['raw_landmarks'],
+                    smart_center_pixel,
+                    frame_pose_data.get('axis_type', 'unknown'),
+                    i
+                )
+                stabilized_frames_with_pose.append(frame_with_pose)
+            else:
+                # No pose detected, use stabilized frame as-is
+                stabilized_frames_with_pose.append(stabilized_frame)
         
         # Step 6: Rendering outputs
         print("Step 6: Rendering output videos...")
         
-        # Render stabilized video
-        renderer.render_video(stabilized_frames, "stabilized_output.mp4", fps)
+        # Render stabilized video with pose skeleton overlay
+        renderer.render_video(stabilized_frames_with_pose, "stabilized_output.mp4", fps)
         
-        # Render side-by-side comparison (original | stabilized)
-        renderer.render_comparison(frames, stabilized_frames, "comparison_output.mp4", fps)
+        # Render side-by-side comparison (original | stabilized with pose overlay)
+        renderer.render_comparison(frames, stabilized_frames_with_pose, "comparison_output.mp4", fps)
         
         print("\n" + "=" * 50)
         print("Pipeline execution completed successfully!")
