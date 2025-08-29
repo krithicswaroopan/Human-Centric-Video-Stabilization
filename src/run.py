@@ -35,6 +35,14 @@ def parse_arguments():
     # Background removal options
     parser.add_argument("--bg_model", choices=["general", "landscape"], 
                        default="general", help="Background model variant")
+    parser.add_argument("--bg_mode", choices=["transparent", "color", "blur"],
+                       default="color", help="Background replacement mode")
+    parser.add_argument("--bg_color", type=str, default="0,255,0",
+                       help="Background color in BGR format (e.g. '0,255,0' for green)")
+    parser.add_argument("--blur_strength", type=int, default=15,
+                       help="Background blur strength (kernel size, must be odd)")
+    parser.add_argument("--enable_edge_smoothing", choices=["true", "false"],
+                       default="true", help="Enable border smoothing for cleaner edges")
     
     # Pose detection options
     parser.add_argument("--pose_model", choices=["lite", "full", "heavy"],
@@ -100,13 +108,29 @@ def main():
         # Step 2: Initialize modules with configurations
         print("Step 2: Initializing modules...")
         
-        # Background removal config
+        # Parse background color from string
+        try:
+            bg_color_values = [int(x) for x in args.bg_color.split(',')]
+            if len(bg_color_values) != 3:
+                raise ValueError("Background color must have exactly 3 values")
+            bg_color = tuple(bg_color_values)
+        except (ValueError, AttributeError) as e:
+            print(f"Invalid background color format '{args.bg_color}'. Using default green (0,255,0)")
+            bg_color = (0, 255, 0)
+        
+        # Background removal config with enhancements
         bg_config = BackgroundRemovalConfig(
             model_selection=0 if args.bg_model == "general" else 1,
             confidence_threshold=0.1,
             enable_bilateral_filter=True,
             enable_temporal_smoothing=True,
-            fallback_enabled=True
+            fallback_enabled=True,
+            # Background options
+            background_mode=args.bg_mode,
+            background_color=bg_color,
+            blur_strength=args.blur_strength,
+            # Border smoothing
+            enable_edge_smoothing=args.enable_edge_smoothing == "true"
         )
         background_remover = BackgroundRemover(bg_config)
         
@@ -130,8 +154,11 @@ def main():
         )
         stabilizer = Stabilizer(stabilization_config)
         
-        # Rendering config
-        rendering_config = RenderingConfig()
+        # Rendering config with universal video compatibility settings
+        rendering_config = RenderingConfig(
+            max_total_pixels=2073600,  # Full HD total pixels (1920x1080) - universal limit
+            scale_large_videos=True    # Enable scaling for large videos
+        )
         renderer = Renderer(args.output_dir, rendering_config)
         
         # Step 3: Background removal processing
@@ -141,12 +168,35 @@ def main():
         
         # Step 4: Pose detection processing
         print("Step 4: Processing pose detection...")
-        pose_data = pose_detector.process_video(frames)
+        pose_data_list = pose_detector.process_video(frames)
+        
+        detected_count = sum(1 for p in pose_data_list if p['smart_confidence'] > 0.3)
+        print(f"Detected poses in {detected_count}/{len(pose_data_list)} frames")
         
         # Export pose data as JSON
         pose_json_path = os.path.join(args.output_dir, "pose_data.json")
-        pose_detector.export_to_json(pose_data, pose_json_path)
-        print(f"Pose data exported to: {pose_json_path}")
+        import json
+        try:
+            # Convert numpy types to native Python types for JSON serialization
+            def convert_numpy_types(obj):
+                if isinstance(obj, np.integer):
+                    return int(obj)
+                elif isinstance(obj, np.floating):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {key: convert_numpy_types(value) for key, value in obj.items()}
+                elif isinstance(obj, (list, tuple)):
+                    return [convert_numpy_types(item) for item in obj]
+                return obj
+            
+            json_data = convert_numpy_types(pose_data_list)
+            with open(pose_json_path, 'w') as f:
+                json.dump(json_data, f, indent=2)
+            print(f"Pose data exported to: {pose_json_path}")
+        except Exception as e:
+            print(f"Warning: Failed to export pose data: {e}")
         
         # Step 5: Stabilization processing
         print("Step 5: Processing stabilization...")
@@ -156,17 +206,9 @@ def main():
             frame_height, frame_width = frames[0].shape[:2] 
             stabilizer.config.target_position = (frame_width // 2, frame_height // 2)
         
-        # Create pose data list for stabilization (use smart centers)
-        pose_data_list = []
-        for i in range(len(frames)):
-            # Process each frame to get smart center data  
-            pose_detector.frame_count = i
-            frame_pose_data = pose_detector.process_frame(frames[i])
-            pose_data_list.append(frame_pose_data)
-        
         # Compute and smooth offsets using smart centers
-        offsets = stabilizer.compute_offsets(pose_data_list)
-        smooth_offsets = stabilizer.smooth_offsets(offsets)
+        raw_offsets = stabilizer.compute_offsets(pose_data_list, normalized=True)
+        smooth_offsets = stabilizer.smooth_offsets(raw_offsets)
         
         # Apply transforms to person frames  
         stabilized_frames = stabilizer.apply_transforms(person_frames, smooth_offsets)
@@ -174,6 +216,9 @@ def main():
         # Add pose skeleton overlay to stabilized frames
         print("Adding pose skeleton overlay to stabilized frames...")
         stabilized_frames_with_pose = []
+        
+        # Get frame dimensions for coordinate conversion
+        frame_height, frame_width = frames[0].shape[:2]
         
         for i, (stabilized_frame, frame_pose_data) in enumerate(zip(stabilized_frames, pose_data_list)):
             if 'raw_landmarks' in frame_pose_data and frame_pose_data['raw_landmarks']:

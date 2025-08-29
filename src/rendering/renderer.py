@@ -9,10 +9,14 @@ import os
 
 class RenderingConfig:
     """Configuration for rendering module."""
-    def __init__(self, video_codec='mp4v', video_quality=1.0, comparison_layout='horizontal'):
+    def __init__(self, video_codec='mp4v', video_quality=1.0, comparison_layout='horizontal',
+                 max_total_pixels=2073600, scale_large_videos=True):  # 1920x1080 = 2.07MP
         self.video_codec = video_codec
         self.video_quality = video_quality
         self.comparison_layout = comparison_layout
+        # Universal scaling based on total pixel count (resolution-agnostic)
+        self.max_total_pixels = max_total_pixels    # Max pixels for comparison video
+        self.scale_large_videos = scale_large_videos # Whether to scale down large videos
 
 
 class Renderer:
@@ -90,6 +94,7 @@ class Renderer:
             filename (str): Output filename
             fps (int): Frame rate
         """
+        
         if not orig_frames or not stab_frames:
             print(f"Warning: Missing frames for comparison video {filename}")
             return
@@ -104,13 +109,48 @@ class Renderer:
         height, width = orig_frames[0].shape[:2]
         output_path = os.path.join(self.output_dir, filename)
         
+        # Universal resolution scaling based on total pixel count (works for all aspect ratios)
+        scale_factor = 1.0
+        if self.config.scale_large_videos:
+            # Calculate projected comparison video dimensions
+            if self.config.comparison_layout == 'horizontal':
+                comp_width = width * 2  # Side-by-side doubles width
+                comp_height = height
+            else:
+                comp_width = width
+                comp_height = height * 2  # Vertical doubles height
+            
+            # Calculate total pixels in comparison video
+            total_pixels = comp_width * comp_height
+            
+            # Scale down if exceeds maximum
+            if total_pixels > self.config.max_total_pixels:
+                scale_factor = np.sqrt(self.config.max_total_pixels / total_pixels)
+                new_width = int(width * scale_factor)
+                new_height = int(height * scale_factor)
+                
+                if self.config.comparison_layout == 'horizontal':
+                    final_comp_width = new_width * 2
+                    final_comp_height = new_height
+                else:
+                    final_comp_width = new_width  
+                    final_comp_height = new_height * 2
+                
+        
         # Create comparison frames
         comparison_frames = []
         
-        for orig_frame, stab_frame in zip(orig_frames, stab_frames):
+        for i, (orig_frame, stab_frame) in enumerate(zip(orig_frames, stab_frames)):
             # Ensure both frames have same dimensions
             if orig_frame.shape != stab_frame.shape:
                 stab_frame = cv2.resize(stab_frame, (width, height))
+            
+            # Scale down frames if needed for large videos
+            if scale_factor < 1.0:
+                scaled_width = int(width * scale_factor)
+                scaled_height = int(height * scale_factor)
+                orig_frame = cv2.resize(orig_frame, (scaled_width, scaled_height))
+                stab_frame = cv2.resize(stab_frame, (scaled_width, scaled_height))
             
             # Create side-by-side layout as per master doc
             if self.config.comparison_layout == 'horizontal':
@@ -121,17 +161,26 @@ class Renderer:
                 comparison_frame = cv2.vconcat([orig_frame, stab_frame])
             
             comparison_frames.append(comparison_frame)
+            
         
         # Get comparison video dimensions
         comp_height, comp_width = comparison_frames[0].shape[:2]
         
         # Initialize video writer for comparison
         fourcc = cv2.VideoWriter_fourcc(*self.config.video_codec)
+        
         video_writer = cv2.VideoWriter(output_path, fourcc, fps, (comp_width, comp_height))
         
         if not video_writer.isOpened():
             print(f"Error: Could not open video writer for {output_path}")
-            return
+            
+            # Try alternative codec
+            fourcc_alt = cv2.VideoWriter_fourcc(*'XVID')
+            video_writer = cv2.VideoWriter(output_path, fourcc_alt, fps, (comp_width, comp_height))
+            
+            if not video_writer.isOpened():
+                print("Error: Alternative codec also failed")
+                return
         
         try:
             # Write comparison frames

@@ -1,0 +1,42 @@
+2025-08-29 16:27:09,291 - INFO - =================================================================
+2025-08-29 16:27:09,291 - INFO - Human-Centric Video Stabilization - DEBUG VERSION
+2025-08-29 16:27:09,291 - INFO - =================================================================
+2025-08-29 16:27:09,291 - INFO - STEP 1: Loading video...
+2025-08-29 16:27:09,983 - INFO - Video loaded: 328 frames, 25.0 FPS, 720x1280
+2025-08-29 16:27:09,983 - INFO - STEP 2: Initializing modules...
+2025-08-29 16:27:09,983 - INFO - Background config: model=general, mode=color, color=(0, 255, 0)
+2025-08-29 16:27:09,996 - INFO - Pose config: model=full, confidence=0.7
+2025-08-29 16:27:09,996 - INFO - Stabilization config: smoothing=gaussian, window=7
+2025-08-29 16:27:09,996 - INFO - Modules initialized successfully
+2025-08-29 16:27:09,996 - INFO - STEP 3: Processing background removal...
+2025-08-29 16:27:48,294 - INFO - Saved debug frame 0
+2025-08-29 16:27:48,301 - INFO - Saved debug frame 5
+2025-08-29 16:27:48,310 - INFO - Saved debug frame 10
+2025-08-29 16:27:48,317 - INFO - Saved debug frame 15
+2025-08-29 16:27:48,324 - INFO - Saved debug frame 20
+2025-08-29 16:27:48,331 - INFO - Saved debug frame 25
+2025-08-29 16:27:48,332 - INFO - Background removal completed: 328 frames processed
+2025-08-29 16:27:48,332 - INFO - STEP 4: Detecting poses...
+2025-08-29 16:27:57,305 - INFO - Pose detection stats: 328/328 frames with valid poses
+2025-08-29 16:27:57,306 - INFO - Frame 0: confidence=1.000, center=(0.432, 0.359), axis=shoulder
+2025-08-29 16:27:57,306 - INFO - Frame 1: confidence=1.000, center=(0.433, 0.359), axis=shoulder
+2025-08-29 16:27:57,306 - INFO - Frame 2: confidence=1.000, center=(0.436, 0.358), axis=shoulder
+2025-08-29 16:27:57,306 - INFO - Frame 3: confidence=1.000, center=(0.440, 0.355), axis=shoulder
+2025-08-29 16:27:57,306 - INFO - Frame 4: confidence=1.000, center=(0.447, 0.355), axis=shoulder
+2025-08-29 16:27:57,307 - INFO - STEP 5: Computing stabilization...
+2025-08-29 16:27:57,307 - INFO - Computed 328 raw offsets
+2025-08-29 16:27:57,308 - INFO - Applied smoothing with sigma 2.3333333333333335
+2025-08-29 16:27:57,308 - INFO - Offset stats: avg=(0.00, 0.00), max=(0.00, 0.00)
+2025-08-29 16:27:57,763 - INFO - Applied stabilization transforms to 328 frames
+2025-08-29 16:27:57,764 - INFO - STEP 6: Adding pose overlays...
+2025-08-29 16:27:58,166 - INFO - Saved debug stabilized frame 0
+2025-08-29 16:27:58,170 - INFO - Saved debug stabilized frame 5
+2025-08-29 16:27:58,173 - INFO - Saved debug stabilized frame 10
+2025-08-29 16:27:58,176 - INFO - Saved debug stabilized frame 15
+2025-08-29 16:27:58,180 - INFO - Saved debug stabilized frame 20
+2025-08-29 16:27:58,184 - INFO - Saved debug stabilized frame 25
+2025-08-29 16:27:58,185 - INFO - Pose overlays added successfully
+2025-08-29 16:27:58,185 - INFO - STEP 7: Rendering output videos...
+2025-08-29 16:28:04,103 - ERROR - Failed to export pose data: Object of type NormalizedLandmarkList is not JSON serializable
+2025-08-29 16:28:04,107 - INFO - Stabilization data exported to: ./debug_output1\stabilization_data.json
+2025-08-29 16:28:04,108 - INFO - DEBUG pipeline completed successfully

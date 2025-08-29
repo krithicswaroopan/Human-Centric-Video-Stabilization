@@ -4,7 +4,6 @@ Based on master planning document specifications.
 """
 import cv2
 import numpy as np
-from typing import List, Tuple
 from scipy import ndimage
 
 
@@ -39,7 +38,6 @@ class Stabilizer:
         self.config = config or StabilizationConfig()
         self.last_valid_offset = (0, 0)
         self.frame_dimensions = None
-        self.debug_data = []  # Store debug information
         
     def compute_offsets(self, pose_data_list, target_position=None, normalized=True):
         """
@@ -97,7 +95,6 @@ class Stabilizer:
                     "axis_type": axis_type,
                     "frame_dims": self.frame_dimensions
                 }
-                self.debug_data.append(debug_info)
                 
                 self.last_valid_offset = (dx, dy)
                 offsets.append((dx, dy))
@@ -222,17 +219,10 @@ class Stabilizer:
         
         return stabilized_frames
     
-    def get_debug_data(self):
-        """Return collected debug data."""
-        return self.debug_data.copy()
+    def get_smoothing_sigma(self):
+        """Return the sigma value used for Gaussian smoothing."""
+        if self.config.smoothing_method == "gaussian":
+            return self.config.smoothing_window / 3.0
+        else:
+            return 0.0  # Moving average doesn't use sigma
     
-    def log_smoothing_debug(self, raw_offsets, smoothed_offsets):
-        """Log smoothing operation details."""
-        smoothing_debug = {
-            "smoothing_method": self.config.smoothing_method,
-            "smoothing_window": self.config.smoothing_window,
-            "raw_offsets_sample": raw_offsets[:5] if len(raw_offsets) > 5 else raw_offsets,
-            "smoothed_offsets_sample": smoothed_offsets[:5] if len(smoothed_offsets) > 5 else smoothed_offsets,
-            "total_frames": len(raw_offsets)
-        }
-        return smoothing_debug

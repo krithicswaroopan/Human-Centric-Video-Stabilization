@@ -137,81 +137,21 @@ class PoseDetector:
             frames (list): List of video frames
             
         Returns:
-            dict: Complete pose timeline data in Timeline JSON format
+            list: List of pose data dictionaries (one per frame)
         """
-        hip_centers = []
-        all_keypoints = []
+        pose_data_list = []
         
         for frame in frames:
             self.frame_count += 1
             pose_data = self.process_frame(frame)
-            
-            # Add to hip centers timeline
-            hip_centers.append({
-                'frame': pose_data['frame'],
-                'timestamp': pose_data['timestamp'],
-                'x': pose_data['hip_center']['x'],
-                'y': pose_data['hip_center']['y'],
-                'confidence': pose_data['hip_confidence']
-            })
-            
-            # Add to all keypoints
-            all_keypoints.append({
-                'frame': pose_data['frame'],
-                'keypoints': pose_data['keypoints']
-            })
+            pose_data_list.append(pose_data)
         
         # Apply interpolation if enabled and needed
         if self.config.interpolate_missing:
-            hip_centers = self._interpolate_missing_data(hip_centers)
+            pose_data_list = self._interpolate_missing_pose_data(pose_data_list)
         
-        # Return Timeline JSON format as per master doc
-        return {
-            'video_info': {
-                'fps': 30,  # Assumed FPS
-                'total_frames': len(frames)
-            },
-            'hip_centers': hip_centers,
-            'all_keypoints': all_keypoints
-        }
+        return pose_data_list
         
-    def calculate_hip_center(self, pose_landmarks):
-        """
-        Calculate hip center from pose landmarks.
-        Left Hip: Landmark #23, Right Hip: Landmark #24
-        
-        Args:
-            pose_landmarks: MediaPipe pose landmarks
-            
-        Returns:
-            tuple: (x, y, confidence)
-        """
-        left_hip = pose_landmarks.landmark[23]  # LEFT_HIP
-        right_hip = pose_landmarks.landmark[24]  # RIGHT_HIP
-        
-        if self.config.hip_calc_method == "simple":
-            # Simple average as per master doc
-            hip_center_x = (left_hip.x + right_hip.x) / 2
-            hip_center_y = (left_hip.y + right_hip.y) / 2
-            hip_confidence = (left_hip.visibility + right_hip.visibility) / 2
-            
-        elif self.config.hip_calc_method == "weighted":
-            # Confidence-weighted calculation
-            left_weight = left_hip.visibility
-            right_weight = right_hip.visibility
-            total_weight = left_weight + right_weight
-            
-            if total_weight > 0:
-                hip_center_x = (left_hip.x * left_weight + right_hip.x * right_weight) / total_weight
-                hip_center_y = (left_hip.y * left_weight + right_hip.y * right_weight) / total_weight
-                hip_confidence = total_weight / 2
-            else:
-                # Fallback to simple average if no visibility
-                hip_center_x = (left_hip.x + right_hip.x) / 2
-                hip_center_y = (left_hip.y + right_hip.y) / 2
-                hip_confidence = 0.0
-        
-        return hip_center_x, hip_center_y, hip_confidence
     
     def calculate_smart_center(self, pose_landmarks):
         """
@@ -283,6 +223,44 @@ class PoseDetector:
         
         # Last resort: return frame center with zero confidence
         return 0.5, 0.5, 0.0, "fallback"
+
+    def calculate_hip_center(self, pose_landmarks):
+        """
+        Calculate hip center from MediaPipe pose landmarks.
+        
+        Args:
+            pose_landmarks: MediaPipe pose landmarks
+            
+        Returns:
+            tuple: (x, y, confidence)
+        """
+        # MediaPipe landmark indices for hips
+        LEFT_HIP = 23
+        RIGHT_HIP = 24
+        
+        left_hip = pose_landmarks.landmark[LEFT_HIP]
+        right_hip = pose_landmarks.landmark[RIGHT_HIP]
+        
+        # Check if both hips are visible and valid
+        if (left_hip.visibility > 0.3 and right_hip.visibility > 0.3 and
+            0 <= left_hip.x <= 1 and 0 <= left_hip.y <= 1 and
+            0 <= right_hip.x <= 1 and 0 <= right_hip.y <= 1):
+            
+            if self.config.hip_calc_method == "weighted":
+                # Weighted average based on visibility
+                total_weight = left_hip.visibility + right_hip.visibility
+                hip_x = (left_hip.x * left_hip.visibility + right_hip.x * right_hip.visibility) / total_weight
+                hip_y = (left_hip.y * left_hip.visibility + right_hip.y * right_hip.visibility) / total_weight
+            else:
+                # Simple average
+                hip_x = (left_hip.x + right_hip.x) / 2
+                hip_y = (left_hip.y + right_hip.y) / 2
+            
+            confidence = (left_hip.visibility + right_hip.visibility) / 2
+            return hip_x, hip_y, confidence
+        else:
+            # Hip not detected - return center with zero confidence
+            return 0.5, 0.5, 0.0
         
     def export_to_json(self, pose_data, output_path):
         """
@@ -295,31 +273,31 @@ class PoseDetector:
         with open(output_path, 'w') as f:
             json.dump(pose_data, f, indent=2)
     
-    def _interpolate_missing_data(self, hip_centers):
+    def _interpolate_missing_pose_data(self, pose_data_list):
         """
-        Interpolate missing hip center data.
+        Interpolate missing pose data.
         
         Args:
-            hip_centers (list): Hip center data with potential missing values
+            pose_data_list (list): Pose data list with potential missing values
             
         Returns:
-            list: Hip centers with interpolated data
+            list: Pose data with interpolated values
         """
-        for i in range(len(hip_centers)):
-            if hip_centers[i]['confidence'] < self.config.min_detection_confidence:
+        for i in range(len(pose_data_list)):
+            if pose_data_list[i]['smart_confidence'] < self.config.min_detection_confidence:
                 # Find previous and next valid points
                 prev_valid = None
                 next_valid = None
                 
                 # Look backward
                 for j in range(i-1, -1, -1):
-                    if hip_centers[j]['confidence'] >= self.config.min_detection_confidence:
+                    if pose_data_list[j]['smart_confidence'] >= self.config.min_detection_confidence:
                         prev_valid = j
                         break
                 
                 # Look forward
-                for j in range(i+1, len(hip_centers)):
-                    if hip_centers[j]['confidence'] >= self.config.min_detection_confidence:
+                for j in range(i+1, len(pose_data_list)):
+                    if pose_data_list[j]['smart_confidence'] >= self.config.min_detection_confidence:
                         next_valid = j
                         break
                 
@@ -328,88 +306,29 @@ class PoseDetector:
                     # Linear interpolation
                     weight = (i - prev_valid) / (next_valid - prev_valid)
                     
-                    hip_centers[i]['x'] = (
-                        hip_centers[prev_valid]['x'] * (1 - weight) +
-                        hip_centers[next_valid]['x'] * weight
+                    pose_data_list[i]['smart_center']['x'] = (
+                        pose_data_list[prev_valid]['smart_center']['x'] * (1 - weight) +
+                        pose_data_list[next_valid]['smart_center']['x'] * weight
                     )
-                    hip_centers[i]['y'] = (
-                        hip_centers[prev_valid]['y'] * (1 - weight) +
-                        hip_centers[next_valid]['y'] * weight
+                    pose_data_list[i]['smart_center']['y'] = (
+                        pose_data_list[prev_valid]['smart_center']['y'] * (1 - weight) +
+                        pose_data_list[next_valid]['smart_center']['y'] * weight
                     )
-                    hip_centers[i]['confidence'] = max(
-                        hip_centers[prev_valid]['confidence'],
-                        hip_centers[next_valid]['confidence']
+                    pose_data_list[i]['smart_confidence'] = max(
+                        pose_data_list[prev_valid]['smart_confidence'],
+                        pose_data_list[next_valid]['smart_confidence']
                     ) * 0.7  # Reduced confidence for interpolated data
                 elif prev_valid is not None:
                     # Use previous valid point
-                    hip_centers[i]['x'] = hip_centers[prev_valid]['x']
-                    hip_centers[i]['y'] = hip_centers[prev_valid]['y']
-                    hip_centers[i]['confidence'] = hip_centers[prev_valid]['confidence'] * 0.5
+                    pose_data_list[i]['smart_center'] = pose_data_list[prev_valid]['smart_center'].copy()
+                    pose_data_list[i]['smart_confidence'] = pose_data_list[prev_valid]['smart_confidence'] * 0.5
                 elif next_valid is not None:
                     # Use next valid point
-                    hip_centers[i]['x'] = hip_centers[next_valid]['x']
-                    hip_centers[i]['y'] = hip_centers[next_valid]['y']
-                    hip_centers[i]['confidence'] = hip_centers[next_valid]['confidence'] * 0.5
+                    pose_data_list[i]['smart_center'] = pose_data_list[next_valid]['smart_center'].copy()
+                    pose_data_list[i]['smart_confidence'] = pose_data_list[next_valid]['smart_confidence'] * 0.5
         
-        return hip_centers
+        return pose_data_list
     
-    def draw_pose_overlay(self, frame, pose_landmarks, hip_center_pixel, frame_num):
-        """
-        Draw pose overlay for debugging and verification.
-        
-        Args:
-            frame: Original frame
-            pose_landmarks: MediaPipe pose landmarks
-            hip_center_pixel: Hip center in pixel coordinates (x, y)
-            frame_num: Frame number for labeling
-            
-        Returns:
-            Frame with pose overlay drawn
-        """
-        if pose_landmarks is None:
-            return frame
-        
-        overlay_frame = frame.copy()
-        height, width = frame.shape[:2]
-        
-        # Draw all pose landmarks
-        for idx, landmark in enumerate(pose_landmarks.landmark):
-            x = int(landmark.x * width)
-            y = int(landmark.y * height)
-            
-            # Different colors for different body parts
-            if idx in [23, 24]:  # Hip landmarks
-                color = (0, 255, 0)  # Green for hips
-                radius = 8
-            elif idx in [11, 12, 13, 14, 15, 16]:  # Arms
-                color = (255, 0, 0)  # Blue for arms
-                radius = 4
-            else:
-                color = (0, 0, 255)  # Red for other landmarks
-                radius = 3
-                
-            cv2.circle(overlay_frame, (x, y), radius, color, -1)
-            
-            # Label hip landmarks
-            if idx in [23, 24]:
-                label = f"L_HIP" if idx == 23 else "R_HIP"
-                cv2.putText(overlay_frame, label, (x + 10, y), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-        
-        # Draw hip center with larger circle
-        if hip_center_pixel:
-            hip_x, hip_y = int(hip_center_pixel[0]), int(hip_center_pixel[1])
-            cv2.circle(overlay_frame, (hip_x, hip_y), 12, (255, 255, 0), 3)  # Yellow circle
-            cv2.putText(overlay_frame, "HIP_CENTER", (hip_x + 15, hip_y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-        
-        # Add frame info
-        cv2.putText(overlay_frame, f"Frame: {frame_num}", (10, 30), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.putText(overlay_frame, f"Hip: ({hip_center_pixel[0]:.1f}, {hip_center_pixel[1]:.1f})" if hip_center_pixel else "No Hip", 
-                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
-        return overlay_frame
     
     def draw_full_pose_skeleton(self, frame, pose_landmarks, smart_center_pixel, axis_type, frame_num):
         """

@@ -11,12 +11,23 @@ class BackgroundRemovalConfig:
     """Configuration for background removal module."""
     def __init__(self, model_selection=0, confidence_threshold=0.1, 
                  enable_bilateral_filter=True, enable_temporal_smoothing=True,
-                 fallback_enabled=True):
+                 fallback_enabled=True, background_mode="transparent",
+                 background_color=(0, 255, 0), blur_strength=15, 
+                 enable_edge_smoothing=True):
+        # Original working configuration
         self.model_selection = model_selection
         self.confidence_threshold = confidence_threshold
         self.enable_bilateral_filter = enable_bilateral_filter
         self.enable_temporal_smoothing = enable_temporal_smoothing
         self.fallback_enabled = fallback_enabled
+        
+        # Background replacement options
+        self.background_mode = background_mode  # "transparent", "color", "blur"
+        self.background_color = background_color  # BGR tuple for solid color
+        self.blur_strength = blur_strength  # Blur kernel size (must be odd)
+        
+        # Border smoothing option
+        self.enable_edge_smoothing = enable_edge_smoothing
 
 
 class BackgroundRemover:
@@ -91,7 +102,18 @@ class BackgroundRemover:
                 person_frame = frame.copy()
                 person_frame[binary_mask == 0] = 0
                 
-                return person_frame, binary_mask
+                # Apply minimal edge smoothing if enabled (conservative approach)
+                if self.config.enable_edge_smoothing:
+                    person_frame = self._smooth_borders(person_frame, binary_mask)
+                
+                # Apply background replacement based on selected mode (NEW FEATURE ONLY)
+                if hasattr(self.config, 'background_mode') and self.config.background_mode != "transparent":
+                    # Convert binary mask back to float for proper blending
+                    float_mask = binary_mask.astype(np.float32)
+                    final_frame = self._apply_background_replacement(frame, person_frame, float_mask)
+                    return final_frame, binary_mask
+                else:
+                    return person_frame, binary_mask
             else:
                 # Person not detected - return original frame
                 return frame.copy(), np.ones_like(frame[:,:,0], dtype=np.uint8)
@@ -161,3 +183,82 @@ class BackgroundRemover:
         self.selfie_segmentation = self.mp_selfie_segmentation.SelfieSegmentation(
             model_selection=1  # Landscape model
         )
+    
+    def _smooth_borders(self, person_frame, binary_mask):
+        """
+        Smooth pixelated borders by normalizing edge pixels based on closest body pixels.
+        This is a targeted approach that only affects border pixels without changing 
+        the overall segmentation or stability.
+        
+        Args:
+            person_frame (np.ndarray): Person-only frame with hard edges
+            binary_mask (np.ndarray): Binary mask (0 or 1)
+            
+        Returns:
+            np.ndarray: Person frame with smoothed borders
+        """
+        # Find border pixels (edge detection on mask)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        border_pixels = cv2.morphologyEx(binary_mask, cv2.MORPH_GRADIENT, kernel)
+        
+        # Create a slightly dilated version of the person frame for sampling
+        dilated_mask = cv2.dilate(binary_mask, kernel, iterations=2)
+        
+        # Apply light Gaussian blur only to the person region
+        blurred_person = cv2.GaussianBlur(person_frame, (5, 5), 1.0)
+        
+        # Create result frame starting with original
+        result_frame = person_frame.copy()
+        
+        # For each border pixel, blend with the blurred version
+        border_coords = np.where(border_pixels > 0)
+        for y, x in zip(border_coords[0], border_coords[1]):
+            if dilated_mask[y, x] > 0:  # Only if within dilated body region
+                # Blend original and blurred pixel (70% original, 30% blurred)
+                result_frame[y, x] = (0.7 * person_frame[y, x] + 0.3 * blurred_person[y, x]).astype(np.uint8)
+        
+        return result_frame
+    
+    def _apply_background_replacement(self, original_frame, person_frame, mask):
+        """
+        Apply different background replacement modes.
+        
+        Args:
+            original_frame (np.ndarray): Original input frame
+            person_frame (np.ndarray): Person-only frame (transparent background)
+            mask (np.ndarray): Final processed mask (0-1 float)
+            
+        Returns:
+            np.ndarray: Frame with background replacement applied
+        """
+        if self.config.background_mode == "transparent":
+            # Return person-only frame (current default behavior)
+            return person_frame
+        
+        elif self.config.background_mode == "color":
+            # Create solid color background
+            background = np.full_like(original_frame, self.config.background_color, dtype=np.uint8)
+            
+            # Blend person with colored background using mask
+            mask_3channel = np.stack([mask] * 3, axis=-1)
+            result = (person_frame * mask_3channel + background * (1 - mask_3channel)).astype(np.uint8)
+            
+            return result
+        
+        elif self.config.background_mode == "blur":
+            # Create blurred background
+            blur_kernel_size = self.config.blur_strength
+            if blur_kernel_size % 2 == 0:  # Ensure odd kernel size
+                blur_kernel_size += 1
+            
+            blurred_background = cv2.GaussianBlur(original_frame, (blur_kernel_size, blur_kernel_size), 0)
+            
+            # Blend person with blurred background using mask
+            mask_3channel = np.stack([mask] * 3, axis=-1)
+            result = (person_frame * mask_3channel + blurred_background * (1 - mask_3channel)).astype(np.uint8)
+            
+            return result
+        
+        else:
+            # Default to transparent mode
+            return person_frame
